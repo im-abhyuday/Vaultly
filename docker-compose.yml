@@ -1,0 +1,132 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tenantrag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tenantrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tenantrag_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-tenantrag}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tenantrag} -d ${POSTGRES_DB:-tenantrag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tenantrag-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: tenantrag-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tenantrag-net
+
+  kafka:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.2
+    container_name: tenantrag-kafka
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://kafka:9092,OUTSIDE://localhost:19092
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tenantrag-net
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tenantrag-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app:ro
+    networks:
+      - tenantrag-net
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tenantrag-worker
+    restart: unless-stopped
+    command: ["python", "-m", "app.workers.main"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app:ro
+    networks:
+      - tenantrag-net
+
+volumes:
+  pgdata:
+  redisdata:
+  redpandadata:
+
+networks:
+  tenantrag-net:
+    driver: bridge
