@@ -1,4 +1,4 @@
-# TenantRAG
+# Vaultly
 
 A production-style, multi-tenant Retrieval-Augmented Generation (RAG) platform with built-in evaluation, access control, semantic caching, and cost tracking.
 
@@ -35,7 +35,7 @@ A production-style, multi-tenant Retrieval-Augmented Generation (RAG) platform w
 ## Repository Structure
 
 ```
-tenantrag/
+vaultly/
 ├── backend/
 │   ├── alembic/              # Database schema migrations
 │   ├── app/
@@ -77,8 +77,8 @@ tenantrag/
 - Git
 
 ### 2. Configure Environment
-```bash
-cp .env.example .env
+```powershell
+Copy-Item .env.example .env
 ```
 
 ### 3. Start Infrastructure & Services
