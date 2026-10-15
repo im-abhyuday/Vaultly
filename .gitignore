@@ -57,3 +57,4 @@ dmypy.json
 
 # Docker / Volumes
 *.log
+data/

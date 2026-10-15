@@ -16,7 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install python dependencies
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install torch --extra-index-url https://download.pytorch.org/whl/cpu && \
+    pip install -r requirements.txt
 
 # Copy application source code
 COPY . .

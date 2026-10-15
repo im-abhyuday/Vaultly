@@ -81,7 +81,8 @@ class Settings(BaseSettings):
 
     # Kafka / Redpanda Message Broker
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:19092"
-    KAFKA_CONSUMER_GROUP_PREFIX: str = "tenantrag"
+    KAFKA_CONSUMER_GROUP_PREFIX: str = "vaultly"
+    KAFKA_TOPIC_PREFIX: str = "vaultly"
 
     # Authentication & Security
     JWT_SECRET_KEY: str = Field(
@@ -92,24 +93,34 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # Embeddings & Vector Search
-    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
-    EMBEDDING_DIMENSION: int = 384
+    # Storage & Upload Limits
+    MAX_UPLOAD_MB: int = 25
+    STORAGE_BACKEND: str = "local"
+    STORAGE_LOCAL_ROOT: str = "data/storage"
 
-    # Reranker
-    RERANKER_MODEL: str = "BAAI/bge-reranker-base"
-    USE_RERANKER_DEFAULT: bool = True
-
-    # LLM Settings (provider-agnostic: "ollama" or "openai")
-    LLM_PROVIDER: str = "ollama"
-    LLM_BASE_URL: str = "http://localhost:11434"
-    LLM_API_KEY: str = "not-needed-for-ollama"
-    LLM_MODEL: str = "llama3:8b"
-    LLM_TEMPERATURE: float = 0.0
+    # Document & Ingestion Limits
+    MAX_PAGES_PER_DOC: int = 500
+    MAX_EXTRACTED_CHARS: int = 5_000_000
+    MAX_CHUNKS_PER_DOC: int = 2000
 
     # Ingestion & Chunking Defaults
-    DEFAULT_CHUNK_SIZE: int = 512
-    DEFAULT_CHUNK_OVERLAP: int = 64
+    DEFAULT_CHUNK_SIZE_TOKENS: int = 256
+    DEFAULT_CHUNK_OVERLAP_TOKENS: int = 32
+    DEFAULT_CHUNK_SIZE: int = 256
+    DEFAULT_CHUNK_OVERLAP: int = 32
+    DEFAULT_EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+    DEFAULT_EMBEDDING_DIM: int = 384
+
+    # Embeddings & Vector Search
+    EMBEDDING_PROVIDER: str = "fake"  # 'fake' or 'local'
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+    EMBEDDING_DIMENSION: int = 384
+    EMBEDDING_BATCH_SIZE: int = 32
+
+    # Worker & Outbox Settings
+    WORKER_MAX_ATTEMPTS: int = 5
+    OUTBOX_POLL_INTERVAL_MS: int = 500
+    OUTBOX_RETENTION_DAYS: int = 7
 
     # Rate Limiting
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60

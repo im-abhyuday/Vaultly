@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, groups, health, users
+from app.api.v1.endpoints import auth, documents, groups, health, users
 
 api_router = APIRouter()
 
@@ -17,3 +17,6 @@ api_router.include_router(users.router, prefix="/users", tags=["Users"])
 
 # Mount groups endpoints under /api/v1/groups
 api_router.include_router(groups.router, prefix="/groups", tags=["Groups"])
+
+# Mount documents endpoints under /api/v1/documents
+api_router.include_router(documents.router, prefix="/documents", tags=["Documents"])

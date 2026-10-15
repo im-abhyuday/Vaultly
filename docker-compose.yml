@@ -93,6 +93,8 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app:ro
+      - ./backend/alembic:/app/alembic:ro
+      - docstorage:/app/data/storage
     networks:
       - vaultly-net
 
@@ -102,7 +104,8 @@ services:
       dockerfile: Dockerfile
     container_name: vaultly-worker
     restart: unless-stopped
-    command: ["python", "-m", "app.workers.main"]
+    command: ["python", "-m", "app.workers", "--role", "all"]
+    stop_grace_period: 30s
     env_file:
       - .env
     environment:
@@ -110,6 +113,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${APP_DB_USER:-tenantrag_app}:${APP_DB_PASSWORD:-tenantrag_app_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
       - REDIS_URL=redis://redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - HF_HOME=/root/.cache/huggingface
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,6 +123,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend/app:/app/app:ro
+      - ./backend/alembic:/app/alembic:ro
+      - docstorage:/app/data/storage
+      - hf_cache:/root/.cache/huggingface
     networks:
       - vaultly-net
 
@@ -126,6 +133,8 @@ volumes:
   pgdata:
   redisdata:
   redpandadata:
+  docstorage:
+  hf_cache:
 
 networks:
   vaultly-net:

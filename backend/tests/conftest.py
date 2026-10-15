@@ -64,6 +64,7 @@ async def app_engine() -> AsyncGenerator[AsyncEngine, None]:
     await engine.dispose()
 
 
+
 @pytest.fixture
 def owner_session_maker(owner_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     """Session factory for the owner role."""
@@ -94,11 +95,12 @@ async def clean_database(owner_engine: AsyncEngine) -> AsyncGenerator[None, None
     async with owner_engine.begin() as conn:
         await conn.execute(
             text(
-                "TRUNCATE TABLE invitations, refresh_tokens, group_members, "
+                "TRUNCATE TABLE outbox_events, invitations, refresh_tokens, group_members, "
                 "groups, memberships, users, tenants RESTART IDENTITY CASCADE;"
             )
         )
     yield
+
 
 
 @pytest.fixture

@@ -143,16 +143,26 @@ pytest backend/tests -v
 - `POST /api/v1/groups/{group_id}/members`: Add user to group (Admin only).
 - `DELETE /api/v1/groups/{group_id}/members/{user_id}`: Remove user from group (Admin only).
 
+### Document Management & Ingestion (Phase 2)
+- `POST /api/v1/documents`: Upload file (PDF, DOCX, TXT/MD, up to 25MB). Computes SHA-256 on the fly, enforces owner-scoped deduplication, writes to transactional outbox, and returns 202 Accepted.
+- `GET /api/v1/documents`: List documents accessible to current user (respecting `metadata_visible` permissions, with pagination and filtering).
+- `GET /api/v1/documents/{document_id}`: Retrieve document metadata, lifecycle status (`UPLOADED`, `PARSING`, `PARSED`, `INDEXING`, `READY`, `FAILED`), and error details.
+- `GET /api/v1/documents/{document_id}/chunks`: Retrieve parsed text chunks and token offsets (subject to `content_accessible` permissions; Admins cannot bypass private documents).
+- `PATCH /api/v1/documents/{document_id}/access`: Update visibility (`PRIVATE`, `TENANT`, `GROUP`) and grant/revoke access list entries (Owner or Admin).
+- `DELETE /api/v1/documents/{document_id}`: Delete document, cascaded chunks, ACLs, and physical storage files (Owner or Admin).
+- `POST /api/v1/documents/{document_id}/reprocess`: Reset document status to `UPLOADED` and re-emit outbox event for re-parsing/re-embedding (Owner or Admin).
+
 ---
 
 ## Implementation Roadmap
 
 - [x] **Phase 0**: Repo scaffold, docker-compose, FastAPI skeleton, config management, Alembic, lint/type/test tooling, CI.
 - [x] **Phase 1**: Auth + multi-tenancy + RBAC + RLS, with isolation tests.
-- [ ] **Phase 2**: Document upload + Kafka ingestion pipeline (parse -> chunk -> embed), idempotency, retries, DLQ.
+- [x] **Phase 2**: Document upload + Kafka ingestion pipeline (parse -> chunk -> embed), idempotency, retries, DLQ.
 - [ ] **Phase 3**: Hybrid retrieval (vector + FTS + RRF) with permission-aware SQL, reranking, LLM answer with citations.
 - [ ] **Phase 4**: Redis semantic cache + exact cache + invalidation + rate limiting.
 - [ ] **Phase 5**: Usage/cost tracking + usage API.
 - [ ] **Phase 6**: Evaluation module (datasets, metrics, runs, comparison) + ablation script.
 - [ ] **Phase 7**: React frontend (all pages and dashboards).
 - [ ] **Phase 8**: Load testing with Locust, performance tuning, observability, final docs.
+

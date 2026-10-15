@@ -178,8 +178,152 @@ This document records the architectural and design decisions made for TenantRAG.
 
 - **Context**: When a user queries a resource (user, group, document) belonging to another tenant, returning HTTP 403 confirms the resource ID exists in the system (information oracle).
 - **Decision**: All cross-tenant lookups return HTTP 404 Not Found. HTTP 403 Forbidden is reserved strictly for authenticated members of the *same* tenant lacking sufficient role privileges (e.g. Member trying to invite another user).
+---
+
+## ADR 015: Owner-Scoped Deduplication (Preventing Cross-User Information Leaks)
+
+- **Context**: File uploads should avoid storing redundant copies of identical documents. However, in a multi-tenant system with private document visibility, deduplication scoping has security and privacy implications.
+- **Decision**: Scope deduplication uniquely to `(tenant_id, owner_id, checksum_sha256)` rather than tenant-wide.
 - **Rationale**:
-  - Eliminates enumeration attacks and prevents information leaks about entity existence in other tenants.
-  - Clean separation of concern: multi-tenant boundary equals existence boundary; RBAC equals permission boundary.
+  - If deduplication were scoped across the entire tenant, User A uploading a document (e.g., a confidential contract, medical report, or whistleblowing document) would receive a "duplicate detected" response if User B had previously uploaded that exact file. This would function as an existence oracle, revealing that someone else in the organization possesses that specific document.
+  - Scoping to `(tenant_id, owner_id, checksum_sha256)` guarantees that deduplication saves storage for re-uploads by the same owner while ensuring absolute confidentiality between users.
+- **Trade-offs**:
+  - Two distinct users uploading the same public or corporate file store two separate physical copies and distinct Document records. This slight storage overhead is an acceptable trade-off for zero information leakage.
+
+---
+
+## ADR 016: Transactional Outbox as an Unscoped System Table
+
+- **Context**: To guarantee at-least-once delivery to Kafka without dual-write inconsistencies, all state changes must emit outbox events in the same database transaction. A background relay worker process must query and publish these events.
+- **Decision**: The `outbox_events` table is designed deliberately as a system-level table: it has NO `tenant_id` column and NO PostgreSQL Row-Level Security (RLS) policies. It is explicitly allowlisted in the RLS meta-test alongside `users` and `alembic_version`.
+- **Rationale**:
+  - The outbox relay worker runs independently of tenant HTTP requests and must poll unpublished events across all tenants efficiently using `SELECT ... FOR UPDATE SKIP LOCKED`.
+  - Imposing RLS on `outbox_events` would require the relay to know all tenant IDs in advance, iterate across tenants in separate transactions, or run with `BYPASSRLS` privileges (violating the principle of least privilege for the runtime application role).
+  - Security is preserved because outbox payloads carry identifiers and metadata pointers only (e.g. `document_id`, `chunking_config_id`), never raw file contents, parsed text, or vector embeddings.
+
+---
+
+## ADR 017: Content Accessibility vs. Metadata Visibility Permissions
+
+- **Context**: Document management requires administrative oversight (viewing document status, error messages, storage size, or retriggering ingestion) while respecting end-user privacy for document contents.
+- **Decision**: Establish two distinct, centralized permission clause builders in `app.services.permissions`:
+  1. `metadata_visible(user)`: Evaluates to `True` for tenant Admins and Auditors, document owners, or users with explicit ACL or Tenant visibility grants. Admins and Auditors can view document listings and lifecycle statuses.
+  2. `content_accessible(user)`: Evaluates to `True` strictly for the document owner, users matching an explicit `document_acl` entry (by group or user ID), or if visibility is `TENANT`. Admins and Auditors do NOT receive an automatic bypass.
+- **Rationale**:
+  - Administrative governance is separated from content access. An administrator can verify that an employee's private document failed parsing and retrigger it, but cannot read the extracted chunks or retrieve private text segments through RAG queries (Phase 3).
+  - Consistent SQL expressions prevent divergence between REST endpoints and future search/retrieval query pipelines.
+
+---
+
+## ADR 018: StorageBackend Protocol with Atomic File Persistence
+
+- **Context**: Ingestion handles file uploads up to 25MB. Files must be safely stored on disk without holding open database transactions, without memory bloat, and without risk of partial/corrupt files after a crash.
+- **Decision**: Define a `StorageBackend` protocol with a `LocalStorage` implementation. File writes stream in 64KB chunks to a temporary file (`.tmp.<uuid>`), calculate SHA-256 on the fly, fsync, and atomically replace the destination file via `os.replace`.
+- **Rationale**:
+  - Never loads entire documents into application memory.
+  - Path traversal is prevented by resolving target paths and verifying that `resolved.relative_to(root_path)` succeeds and does not match root. User-supplied filenames are never used in storage keys (layout is strictly `tenants/{tenant_id}/documents/{document_id}/original`).
+  - Atomicity guarantee: if the database transaction fails after the file is written, the file is unlinked immediately in the error handler. If a crash occurs between write and commit, the outbox event and document row are absent, preventing orphan files from being served.
+
+---
+
+## ADR 019: At-Least-Once Delivery with Idempotent Consumer Processing
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**: Kafka consumers process events under at-least-once delivery semantics. Network partitions, consumer group rebalances, and retries will cause duplicate event delivery. Consumers must never create duplicate chunks, corrupt document status, or re-parse completed documents.
+- **Decision**: All consumers (`ParseConsumer`, `IndexConsumer`) enforce strict idempotency at the database row level:
+  1. *State Machine Claiming*: Workers attempt an atomic transition (e.g. `UPLOADED -> PARSING` or `PARSED -> INDEXING`). If 0 rows match, the document has either moved forward or is claimed by another worker.
+  2. *Duplicate Bypass*: If a message arrives for a document whose status is already at or beyond the expected target stage (`PARSED` or `READY`), the consumer logs an idempotent skip and immediately commits the Kafka offset without error.
+  3. *Chunk Replacement*: If `IndexConsumer` re-indexes a document, it unconditionally deletes existing chunks for that `document_id` within the same transaction before inserting newly embedded chunks.
+- **Rationale**: Eliminates race conditions and guarantees eventual consistency even under unpredictable consumer crash-and-restart cycles.
+
+---
+
+## ADR 020: Transactional Outbox Pattern for Asynchronous Decoupling
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**: Modifying database state (e.g. document uploaded, document parsed) and publishing messages to Kafka in separate steps creates a distributed dual-write problem. If the Kafka publish fails after a DB commit, the document hangs permanently; if the DB commit fails after Kafka publish, workers process non-existent records.
+- **Decision**: Use the Transactional Outbox pattern. All pipeline stage transitions insert an `outbox_events` record in the exact same ACID database transaction as the document update. An independent background worker (`OutboxRelay`) polls unpublished events and forwards them to Kafka.
+- **Rationale**:
+  1. Guarantees zero message loss without requiring two-phase commit (2PC) or distributed transactions.
+  2. Protects the API layer from Kafka availability hiccups—file uploads succeed even if Kafka is momentarily unreachable.
+  3. Supports horizontal scaling: multiple `OutboxRelay` instances safely co-exist using `SELECT ... FOR UPDATE SKIP LOCKED`.
+
+---
+
+## ADR 021: Atomic State Machine Transitions & Worker Row Claiming
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**: When scaling worker replicas, multiple consumer processes across consumer groups or partitions could attempt to process the same document concurrently (e.g., reprocess endpoint called while initial ingestion is completing).
+- **Decision**: Use atomic SQL updates with status guardrails and worker claiming:
+  `UPDATE documents SET status = :target, claimed_by = :worker_id, claimed_at = :now WHERE id = :id AND status = :expected`.
+- **Rationale**:
+  1. Eliminates the need for external distributed lock managers (e.g. Redis Redlock).
+  2. Atomic row-level locking guarantees that exactly one worker acquires ownership of a stage.
+  3. If a worker process dies mid-execution, stale claims (`claimed_at < cutoff`) can be safely identified and reclaimed or marked as failed.
+
+---
+
+## ADR 022: StorageBackend Object Store vs. Kafka Message Payload Size
+
+- **Context**: Parsed text extracted from large PDFs or DOCX files can reach tens of megabytes. Packing large text payloads directly into Kafka messages strains broker memory buffers, degrades throughput, and risks exceeding default message limits (e.g., `message.max.bytes=1MB`).
+- **Decision**: Kafka message envelopes remain lean (<2KB), containing tenant IDs, document IDs, configuration references, and metadata. Extracted text from `ParseConsumer` is streamed directly to `StorageBackend` (`tenants/{tenant_id}/documents/{document_id}/parsed.json`). `IndexConsumer` loads and streams this parsed JSON on-demand.
+- **Rationale**:
+  1. Keeps Kafka brokers fast, lightweight, and within standard configuration parameters.
+  2. Offloads bulk payload I/O to storage backends optimized for large object storage (local disk in development, S3/GCS in production).
+  3. Enables direct inspection and auditing of parsed intermediate representations without querying Kafka event streams.
+
+---
+
+## ADR 023: In-Process Exponential Backoff vs. Kafka Retry Topics
+
+- **Context**: Ingestion pipeline operations can encounter transient failures (e.g. temporary database connection spikes, momentary filesystem locks). Creating complex retry topic hierarchies (`topic.retry-1`, `topic.retry-2`) increases operational overhead and can disorder partition messages.
+- **Decision**: Handle transient errors using in-process exponential backoff with full jitter (`min(max_delay, base * 2^attempt) * uniform(0, 1)`), retrying up to a configured threshold (`MAX_ATTEMPTS=3`). Permanent errors (unsupported MIME types, corrupt files, schema validation failures) bypass retry loops entirely and route straight to the Dead-Letter Queue (DLQ).
+- **Rationale**:
+  1. Rapidly resolves short-lived transient blips within seconds without re-queuing overhead.
+  2. Preserves strict FIFO processing within Kafka topic partitions.
+  3. Keeps Kafka topic provisioning simple and easy to reason about.
+
+---
+
+## ADR 024: Dead Letter Queue (DLQ) Architecture & Diagnostic Headers
+
+- **Context**: Poison pill messages (corrupt bytes, unparseable JSON, invalid envelope schemas) and unrecoverable worker errors must never halt consumer loops or block healthy documents in the partition.
+- **Decision**: Implement dead-letter topics (`vaultly.document.uploaded.dlq` and `vaultly.document.parsed.dlq`). On permanent failure or retry exhaustion:
+  1. Publish the original raw byte payload to the appropriate `.dlq` topic.
+  2. Inject diagnostic Kafka record headers: `error_code`, `error_message`, `stage`, `original_topic`, and ISO-8601 timestamp.
+  3. Update the document status in PostgreSQL to `FAILED` with explicit `error_code` and human-readable message.
+  4. Commit the consumer offset to advance the partition past the poison pill.
+- **Rationale**: Prevents pipeline paralysis, ensures total visibility into failure causes, and allows operational teams to replay or debug failed events directly from DLQ topics.
+
+---
+
+## ADR 025: pgvector HNSW Indexing Strategy with Multi-Tenant Row-Level Security
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**: Chunks must be indexed for high-recall cosine similarity search across millions of vectors while maintaining strict multi-tenant Row-Level Security isolation.
+- **Decision**: Index the `embedding` column in `chunks` using pgvector's `hnsw` index (`vector_cosine_ops`), configured with `m = 16` and `ef_construction = 64`. Create a composite B-tree index on `(tenant_id, document_id)`.
+- **Rationale**:
+  1. *Immediate Read-After-Write*: Unlike `ivfflat`, HNSW does not require an upfront training step or a minimum dataset size; newly inserted chunks are queryable immediately.
+  2. *High Recall Under Concurrent Mutation*: HNSW maintains high recall even as documents are frequently added, deleted, or reprocessed.
+  3. *Seamless RLS Interaction*: Pre-filtering on `tenant_id = current_setting('app.tenant_id')` integrates cleanly with HNSW index traversal in PostgreSQL 16.
+
+---
+
+## ADR 026: Thread Pool Offloading for CPU-Bound Document Parsing & Embedding
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**: PDF/DOCX text extraction and embedding model inference (tokenization and matrix operations) are CPU-bound tasks. Running them synchronously inside an `async def` consumer blocks the Python asyncio event loop, preventing Kafka heartbeat transmissions and causing consumer group timeouts/rebalances.
+- **Decision**: Offload all CPU-bound parsing (`pypdf.PdfReader`, `docx.Document`) and embedding generation (`SentenceTransformer.encode`) to worker thread pools using `asyncio.to_thread()`.
+- **Rationale**:
+  1. Maintains a responsive event loop capable of servicing Kafka heartbeats and keep-alives even during multi-megabyte document parsing.
+  2. Avoids false-positive consumer evictions and unnecessary partition rebalancing storms.
+  3. Provides a clean pathway to multiprocess offloading if scaling beyond single-worker CPU limits is required in future phases.
+
+
 
 

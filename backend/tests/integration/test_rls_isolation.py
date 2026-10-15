@@ -391,6 +391,23 @@ async def test_meta_rls_enabled_and_forced_on_all_tenant_tables(
             policy_count = pol_res.scalar()
             assert policy_count is not None and policy_count >= 1, f"Table {table} must have at least 1 RLS policy"
 
+        # Verify that all public tables without RLS are explicitly allowlisted system tables
+        all_tables_res = await session.execute(
+            text("""
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'r';
+            """)
+        )
+        allowlisted_non_rls_tables = {"users", "alembic_version", "outbox_events"}
+        for (tbl_name,) in all_tables_res.all():
+            if tbl_name in allowlisted_non_rls_tables:
+                continue
+            assert tbl_name in tenant_tables, (
+                f"Table '{tbl_name}' is neither tenant-scoped nor an allowlisted system table: {allowlisted_non_rls_tables}"
+            )
+
 
 @pytest.mark.asyncio
 async def test_harness_leakage_detection_without_rls(

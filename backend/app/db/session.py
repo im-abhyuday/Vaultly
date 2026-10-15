@@ -20,6 +20,9 @@ settings = get_settings()
 engine_kwargs: dict[str, Any] = {
     "echo": False,
     "future": True,
+    "connect_args": {
+        "server_settings": {"jit": "off"},
+    },
 }
 if settings.is_testing:
     engine_kwargs["poolclass"] = NullPool
@@ -32,6 +35,8 @@ engine: AsyncEngine = create_async_engine(
     str(settings.DATABASE_URL),
     **engine_kwargs,
 )
+
+
 
 # Async session factory
 async_session_maker: async_sessionmaker[AsyncSession] = async_sessionmaker(

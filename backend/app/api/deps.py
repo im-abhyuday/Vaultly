@@ -22,7 +22,7 @@ from app.models.membership import Membership
 from app.models.tenant import Tenant
 from app.models.user import User
 
-bearer_scheme = HTTPBearer(auto_error=True)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ class CurrentUser:
 
 
 async def get_current_user_and_session(
-    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
 ) -> AsyncGenerator[tuple[CurrentUser, AsyncSession], None]:
     """Dependency verifying access JWT, scoping tenant session, and returning user context.
 
@@ -48,6 +48,13 @@ async def get_current_user_and_session(
     3. User exists, tenant exists and is active, and membership exists and is active.
     4. Current role is loaded from DB (not JWT claims) for instantaneous role updates.
     """
+    if credentials is None or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
     try:
         payload = decode_access_token(token)

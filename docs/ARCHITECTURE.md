@@ -120,3 +120,79 @@ sequenceDiagram
     API-->>Client: 200 OK [groups]
 ```
 
+---
+
+## Document Ingestion Pipeline & Outbox Pattern (Phase 2)
+
+### 1. Ingestion Lifecycle Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant API as FastAPI Backend
+    participant Disk as StorageBackend (Local/S3)
+    participant DB as PostgreSQL (RLS Enforced)
+    participant Relay as OutboxRelay Daemon
+    participant Kafka as Redpanda / Kafka
+    participant PC as ParseConsumer
+    participant IC as IndexConsumer
+
+    Client->>API: POST /api/v1/documents (multipart stream)
+    API->>Disk: Stream file to disk (.tmp.<uuid> -> original) & SHA-256
+    API->>DB: Check (tenant_id, owner_id, sha256) duplicate
+    API->>DB: INSERT document (status='UPLOADED') + INSERT outbox_event
+    API-->>Client: 202 Accepted (DocumentResponse)
+
+    loop Every 500ms
+        Relay->>DB: SELECT * FROM outbox_events WHERE published_at IS NULL FOR UPDATE SKIP LOCKED
+        Relay->>Kafka: Publish document.uploaded (acks=all)
+        Relay->>DB: UPDATE outbox_events SET published_at = NOW()
+    end
+
+    Kafka->>PC: Consume document.uploaded
+    PC->>DB: UPDATE documents SET status='PARSING', claimed_by=:worker WHERE status='UPLOADED'
+    PC->>Disk: Read original file
+    PC->>PC: asyncio.to_thread(extract_text) [pypdf / docx / txt]
+    PC->>Disk: Write parsed.json (atomic tmp -> target)
+    PC->>DB: UPDATE documents SET status='PARSED' + INSERT outbox_event(document.parsed)
+    PC->>Kafka: Commit offset
+
+    Relay->>Kafka: Publish document.parsed
+
+    Kafka->>IC: Consume document.parsed
+    IC->>DB: UPDATE documents SET status='INDEXING', claimed_by=:worker WHERE status='PARSED'
+    IC->>Disk: Read parsed.json
+    IC->>IC: Hierarchical chunking (chunk_size, overlap)
+    IC->>IC: asyncio.to_thread(embed_documents) [SentenceTransformer / Fake]
+    IC->>DB: DELETE existing chunks WHERE document_id = :id
+    IC->>DB: INSERT chunk records with vector(384) embeddings
+    IC->>DB: UPDATE documents SET status='READY', chunk_count=N, indexed_at=NOW()
+    IC->>Kafka: Commit offset
+```
+
+### 2. Document State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> UPLOADED: File uploaded & written to disk
+    UPLOADED --> PARSING: ParseConsumer claims row
+    PARSING --> PARSED: Text extracted & parsed.json written
+    PARSING --> FAILED: Parse error (corrupt, empty, unsupported, retries exhausted)
+    PARSED --> INDEXING: IndexConsumer claims row
+    INDEXING --> READY: Chunks embedded & committed to pgvector
+    INDEXING --> FAILED: Chunk/embed error or retries exhausted
+    READY --> PARSING: POST /documents/{id}/reprocess
+    FAILED --> PARSING: POST /documents/{id}/reprocess
+    FAILED --> [*]: Dead-Letter Queue (DLQ) emitted
+    READY --> [*]: DELETE /documents/{id} (cascaded)
+```
+
+### 3. Error Handling, Retries & Dead Letter Queue (DLQ)
+- **Transient Failures** (DB connection blip, disk I/O lock): Retried in-process up to `MAX_ATTEMPTS` (default: 3) with exponential backoff and randomized jitter (`min(max_delay, base * 2^attempt) * uniform(0, 1)`).
+- **Permanent Failures & Poison Pills** (corrupt file, unparseable Kafka bytes, unsupported MIME type, retries exhausted):
+  1. Document transitioned to `FAILED` status with structured `error_code` and `error_message`.
+  2. Original message published to DLQ topic (`vaultly.document.uploaded.dlq` or `vaultly.document.parsed.dlq`) with diagnostic Kafka headers (`error_code`, `error_message`, `stage`, `original_topic`, `timestamp`).
+  3. Consumer offset committed to unblock the partition.
+
+

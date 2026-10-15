@@ -1,1 +1,1 @@
-"""Kafka background ingestion workers package."""
+"""Vaultly background workers package for ingestion pipeline."""

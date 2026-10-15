@@ -7,6 +7,12 @@ from app.schemas.auth import (
     TokenResponse,
     UserProfileResponse,
 )
+from app.schemas.document import (
+    ChunkResponse,
+    DocumentAccessUpdateRequest,
+    DocumentListResponse,
+    DocumentResponse,
+)
 from app.schemas.group import (
     AddGroupMemberRequest,
     GroupCreateRequest,
@@ -24,6 +30,10 @@ from app.schemas.user import (
 __all__ = [
     "AcceptInviteRequest",
     "AddGroupMemberRequest",
+    "ChunkResponse",
+    "DocumentAccessUpdateRequest",
+    "DocumentListResponse",
+    "DocumentResponse",
     "GroupCreateRequest",
     "GroupMemberResponse",
     "GroupResponse",
