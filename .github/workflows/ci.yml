@@ -80,9 +80,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
+      - name: Run Database Migrations
+        env:
+          MIGRATION_DATABASE_URL: postgresql+asyncpg://tenantrag:tenantrag_secret@localhost:5432/tenantrag_test
+          DATABASE_URL: postgresql+asyncpg://tenantrag_app:tenantrag_app_secret@localhost:5432/tenantrag_test
+          ENVIRONMENT: test
+        run: |
+          cd backend
+          alembic upgrade head
+
       - name: Run Pytest
         env:
-          DATABASE_URL: postgresql+asyncpg://tenantrag:tenantrag_secret@localhost:5432/tenantrag_test
+          MIGRATION_DATABASE_URL: postgresql+asyncpg://tenantrag:tenantrag_secret@localhost:5432/tenantrag_test
+          DATABASE_URL: postgresql+asyncpg://tenantrag_app:tenantrag_app_secret@localhost:5432/tenantrag_test
           REDIS_URL: redis://localhost:6379/0
           ENVIRONMENT: test
           JWT_SECRET_KEY: test_secret_key_minimum_32_characters_long_for_ci!

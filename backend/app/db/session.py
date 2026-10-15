@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -9,19 +10,27 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
 # Asynchronous database engine (connects as runtime role tenantrag_app)
+engine_kwargs: dict[str, Any] = {
+    "echo": False,
+    "future": True,
+}
+if settings.is_testing:
+    engine_kwargs["poolclass"] = NullPool
+else:
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_size"] = 10
+    engine_kwargs["max_overflow"] = 20
+
 engine: AsyncEngine = create_async_engine(
     str(settings.DATABASE_URL),
-    echo=settings.DEBUG and not settings.is_production,
-    future=True,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    **engine_kwargs,
 )
 
 # Async session factory

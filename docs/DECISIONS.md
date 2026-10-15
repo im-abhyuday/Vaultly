@@ -152,3 +152,34 @@ This document records the architectural and design decisions made for TenantRAG.
   - Allows the API to extract `<tenant_uuid>` directly from the token string before issuing any database queries.
   - The API immediately initializes the transaction-local tenant context to that `<tenant_uuid>` and queries `refresh_tokens` or `invitations` under normal RLS policies without requiring additional `SECURITY DEFINER` functions or privileged roles.
 
+---
+
+## ADR 012: Refresh Token Rotation and Family Reuse Detection
+
+- **Context**: Refresh tokens are long-lived (typically 30 days) and pose a severe credential compromise risk if intercepted.
+- **Decision**: Every refresh request rotates the token immediately, generating a new opaque token within the same `family_id`. If an already replaced or revoked token in that family is submitted again, the system treats it as a security incident and revokes all tokens in that `family_id` across the tenant, committing the revocation immediately before returning HTTP 401.
+- **Rationale**:
+  - Prevents replay and theft attacks: once a token is used, it cannot be reused.
+  - Automatic invalidation shuts down both the attacker and legitimate client if a compromised token is replayed, forcing re-authentication.
+
+---
+
+## ADR 013: RBAC Role Resolution from Database on Every Request
+
+- **Context**: Access tokens contain the user ID and tenant ID. Placing the role directly in the JWT payload risks stale authorization if a user is demoted or removed while their access token is still within its 15-minute validity window.
+- **Decision**: The API resolves the user's active membership and role directly from PostgreSQL (`memberships` table) during dependency injection (`get_current_user_and_session`), cached per-request in the request state.
+- **Rationale**:
+  - Immediate revocation and role demotion enforcement without waiting for access token expiration.
+  - Keeps JWT payloads lightweight and prevents authorization drift.
+
+---
+
+## ADR 014: 404 Not Found vs 403 Forbidden for Cross-Tenant Queries
+
+- **Context**: When a user queries a resource (user, group, document) belonging to another tenant, returning HTTP 403 confirms the resource ID exists in the system (information oracle).
+- **Decision**: All cross-tenant lookups return HTTP 404 Not Found. HTTP 403 Forbidden is reserved strictly for authenticated members of the *same* tenant lacking sufficient role privileges (e.g. Member trying to invite another user).
+- **Rationale**:
+  - Eliminates enumeration attacks and prevents information leaks about entity existence in other tenants.
+  - Clean separation of concern: multi-tenant boundary equals existence boundary; RBAC equals permission boundary.
+
+

@@ -61,3 +61,62 @@ flowchart TD
    - Background consumer daemons processing parsing, chunking, and embedding jobs asynchronously.
 6. **`frontend` (Phase 7)**:
    - React + TypeScript + Vite single-page application with Recharts dashboards.
+
+---
+
+## Multi-Tenancy & Authentication (Phase 1)
+
+### 1. Dual Role & Row-Level Security Architecture
+- **Migrations & Administrative Tasks**: Conducted by the superuser role (`tenantrag`) possessing `SUPERUSER` and `BYPASSRLS`.
+- **Runtime Application Queries**: Conducted by unprivileged role (`tenantrag_app`), strictly subject to PostgreSQL `FORCE ROW LEVEL SECURITY`.
+- **Tenant Context Session Variable**: Every query runs inside a transaction after executing:
+  ```sql
+  SELECT set_config('app.tenant_id', :tenant_id, true);
+  ```
+  The third parameter `true` scopes the variable to the local transaction, eliminating cross-request connection pool leakage.
+
+### 2. Authentication Flow Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant API as FastAPI Backend
+    participant DB as PostgreSQL (tenantrag_app)
+    participant Redis as Redis Cache
+
+    Client->>API: POST /api/v1/auth/login (username, password, client_id=slug)
+    Note over API,DB: Connects as tenantrag_app
+    API->>DB: SELECT resolve_tenant_id(slug) [SECURITY DEFINER]
+    DB-->>API: tenant_id
+    API->>DB: SELECT set_config('app.tenant_id', tenant_id, true)
+    API->>DB: SELECT user & membership WHERE email = :email
+    DB-->>API: user record + Argon2id hash + role
+    API->>API: verify_password(plain, hash)
+    API->>DB: INSERT INTO refresh_tokens (token_hash, family_id, ...)
+    API-->>Client: 200 OK (access_token JWT, opaque refresh_token)
+```
+
+### 3. Authenticated Request & RBAC Verification Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant API as FastAPI Backend
+    participant Redis as Redis Cache
+    participant DB as PostgreSQL (RLS Enforced)
+
+    Client->>API: GET /api/v1/groups (Authorization: Bearer <jwt>)
+    API->>API: Verify JWT signature, exp, iss, aud
+    API->>Redis: Check if jti is denylisted (GET denylist:<jti>)
+    Redis-->>API: nil (valid)
+    API->>DB: SELECT set_config('app.tenant_id', jwt.tid, true)
+    API->>DB: SELECT membership WHERE user_id = :uid AND tenant_id = :tid
+    DB-->>API: Active membership with role (ADMIN / MEMBER / AUDITOR)
+    API->>API: require_role check
+    API->>DB: SELECT * FROM groups (RLS filters by tenant_id automatically)
+    DB-->>API: Tenant groups
+    API-->>Client: 200 OK [groups]
+```
+

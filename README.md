@@ -117,10 +117,38 @@ pytest backend/tests -v
 
 ---
 
+## Implemented API Endpoints (Phase 1)
+
+### Authentication & Tenant Onboarding
+- `POST /api/v1/auth/register-tenant`: Register a new organization, tenant admin user, and initialize active session.
+- `POST /api/v1/auth/login`: OAuth2 password flow with client_id (tenant slug).
+- `POST /api/v1/auth/refresh`: Rotate refresh token and issue new JWT with family reuse detection.
+- `POST /api/v1/auth/logout`: Denylist current JWT in Redis and revoke refresh token family.
+- `GET /api/v1/auth/me`: Retrieve active profile, membership role, and tenant details.
+- `POST /api/v1/auth/accept-invite`: Accept tenant invitation and set up user account.
+
+### User & Membership Management
+- `GET /api/v1/users`: List tenant users (Admin / Auditor).
+- `POST /api/v1/users/invite`: Invite user to tenant with assigned role (Admin only).
+- `PATCH /api/v1/users/{user_id}/role`: Update member role with last-admin protection (Admin only).
+- `DELETE /api/v1/users/{user_id}`: Deactivate user membership and revoke active tokens (Admin only).
+
+### Group Management
+- `GET /api/v1/groups`: List tenant groups (Any tenant member).
+- `POST /api/v1/groups`: Create new group (Admin only).
+- `GET /api/v1/groups/{group_id}`: Get group metadata and member count (Any tenant member).
+- `PUT /api/v1/groups/{group_id}`: Update group name or description (Admin only).
+- `DELETE /api/v1/groups/{group_id}`: Delete group (Admin only).
+- `GET /api/v1/groups/{group_id}/members`: List group members (Any tenant member).
+- `POST /api/v1/groups/{group_id}/members`: Add user to group (Admin only).
+- `DELETE /api/v1/groups/{group_id}/members/{user_id}`: Remove user from group (Admin only).
+
+---
+
 ## Implementation Roadmap
 
 - [x] **Phase 0**: Repo scaffold, docker-compose, FastAPI skeleton, config management, Alembic, lint/type/test tooling, CI.
-- [ ] **Phase 1**: Auth + multi-tenancy + RBAC + RLS, with isolation tests.
+- [x] **Phase 1**: Auth + multi-tenancy + RBAC + RLS, with isolation tests.
 - [ ] **Phase 2**: Document upload + Kafka ingestion pipeline (parse -> chunk -> embed), idempotency, retries, DLQ.
 - [ ] **Phase 3**: Hybrid retrieval (vector + FTS + RRF) with permission-aware SQL, reranking, LLM answer with citations.
 - [ ] **Phase 4**: Redis semantic cache + exact cache + invalidation + rate limiting.
