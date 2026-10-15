@@ -3,12 +3,12 @@ requires = ["setuptools>=65.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tenantrag"
+name = "vaultly"
 version = "0.1.0"
 description = "Production-style multi-tenant RAG platform with built-in evaluation, access control, semantic caching, and cost tracking"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "TenantRAG Team" }]
+authors = [{ name = "Vaultly Team" }]
 
 [tool.ruff]
 target-version = "py311"

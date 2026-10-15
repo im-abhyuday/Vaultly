@@ -1,4 +1,4 @@
-"""TenantRAG application configuration module.
+"""Vaultly application configuration module.
 
 Uses Pydantic v2 BaseSettings for type-safe environment variable parsing,
 validation, and default values.
@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Global configuration settings for the TenantRAG platform."""
+    """Global configuration settings for the Vaultly platform."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     )
 
     # General Application Settings
-    PROJECT_NAME: str = "TenantRAG"
+    PROJECT_NAME: str = "Vaultly"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True

@@ -1,1 +1,1 @@
-"""TenantRAG application package."""
+"""Vaultly application package."""

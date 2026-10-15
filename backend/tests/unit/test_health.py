@@ -13,7 +13,7 @@ async def test_root_endpoint(async_client: AsyncClient) -> None:
     response = await async_client.get("/")
     assert response.status_code == 200
     data = response.json()
-    assert data["service"] == "TenantRAG"
+    assert data["service"] == "Vaultly"
     assert data["version"] == "0.1.0"
     assert data["docs"] == "/api/v1/docs"
 
@@ -36,7 +36,7 @@ async def test_request_id_and_timing_headers(async_client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_readyz_success(async_client: AsyncClient) -> None:
-    """Verify /readyz returns 200 OK when database is reachable."""
+    """Verify /readyz returns 200 OK when database and Kafka are reachable."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock()
 
@@ -47,7 +47,10 @@ async def test_readyz_success(async_client: AsyncClient) -> None:
     mock_engine = MagicMock()
     mock_engine.connect = mock_connect
 
-    with patch("app.main.engine", mock_engine):
+    with (
+        patch("app.main.engine", mock_engine),
+        patch("app.api.v1.endpoints.health.check_kafka", return_value=(True, "Kafka ok (1 brokers)")),
+    ):
         response = await async_client.get("/readyz")
         assert response.status_code == 200
         assert response.json() == {"status": "ready"}
@@ -65,12 +68,39 @@ async def test_readyz_database_failure(async_client: AsyncClient) -> None:
     mock_engine = MagicMock()
     mock_engine.connect = mock_connect_fail
 
-    with patch("app.main.engine", mock_engine):
+    with (
+        patch("app.main.engine", mock_engine),
+        patch("app.api.v1.endpoints.health.check_kafka", return_value=(True, "Kafka ok")),
+    ):
         response = await async_client.get("/readyz")
         assert response.status_code == 503
         data = response.json()
         assert data["status"] == "not_ready"
-        assert "Database connection timeout" in data["error"]
+        assert any("Database connection timeout" in err for err in data["errors"])
+
+
+@pytest.mark.asyncio
+async def test_readyz_kafka_failure(async_client: AsyncClient) -> None:
+    """Verify /readyz returns 503 Service Unavailable when Kafka connection fails."""
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock()
+
+    @asynccontextmanager
+    async def mock_connect() -> AsyncGenerator[AsyncMock, None]:
+        yield mock_conn
+
+    mock_engine = MagicMock()
+    mock_engine.connect = mock_connect
+
+    with (
+        patch("app.main.engine", mock_engine),
+        patch("app.api.v1.endpoints.health.check_kafka", return_value=(False, "Kafka broker unavailable")),
+    ):
+        response = await async_client.get("/readyz")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "not_ready"
+        assert any("Kafka broker unavailable" in err for err in data["errors"])
 
 
 @pytest.mark.asyncio
@@ -93,6 +123,8 @@ async def test_api_v1_health_healthy(async_client: AsyncClient) -> None:
     with (
         patch("app.api.v1.endpoints.health.engine", mock_engine),
         patch("app.api.v1.endpoints.health.aioredis.from_url", return_value=mock_redis),
+        patch("app.api.v1.endpoints.health.check_kafka", return_value=(True, "Kafka ok (1 brokers)")),
+        patch("app.api.v1.endpoints.health.check_outbox", return_value=None),
     ):
         response = await async_client.get("/api/v1/health")
         assert response.status_code == 200
@@ -100,6 +132,7 @@ async def test_api_v1_health_healthy(async_client: AsyncClient) -> None:
         assert data["status"] == "healthy"
         assert data["services"]["database"]["status"] == "healthy"
         assert data["services"]["redis"]["status"] == "healthy"
+        assert data["services"]["kafka"]["status"] == "healthy"
 
 
 @pytest.mark.asyncio
@@ -121,6 +154,8 @@ async def test_api_v1_health_degraded(async_client: AsyncClient) -> None:
             "app.api.v1.endpoints.health.aioredis.from_url",
             side_effect=Exception("Redis connection refused"),
         ),
+        patch("app.api.v1.endpoints.health.check_kafka", return_value=(True, "Kafka ok")),
+        patch("app.api.v1.endpoints.health.check_outbox", return_value=None),
     ):
         response = await async_client.get("/api/v1/health")
         assert response.status_code == 200

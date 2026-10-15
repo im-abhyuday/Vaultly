@@ -28,13 +28,52 @@ class HealthResponse(BaseModel):
     services: dict[str, ServiceStatus]
 
 
+async def check_kafka() -> tuple[bool, str]:
+    """Check Kafka broker connectivity and cluster metadata."""
+    try:
+        from aiokafka.admin import AIOKafkaAdminClient
+
+        admin_client = AIOKafkaAdminClient(
+            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+            request_timeout_ms=2000,
+        )
+        await admin_client.start()
+        try:
+            cluster_info = await admin_client.describe_cluster()
+            broker_count = len(cluster_info.get("brokers", []))
+            return True, f"Kafka ok ({broker_count} brokers)"
+        finally:
+            await admin_client.close()
+    except Exception as e:
+        return False, str(e)
+
+
+async def check_outbox() -> ServiceStatus | None:
+    """Report unpublished outbox events count if outbox_events table exists."""
+    try:
+        async with engine.connect() as conn:
+            check_table = await conn.execute(
+                text("SELECT 1 FROM information_schema.tables WHERE table_name = 'outbox_events'")
+            )
+            if check_table.scalar():
+                count_res = await conn.execute(
+                    text("SELECT count(*) FROM outbox_events WHERE published_at IS NULL")
+                )
+                count = count_res.scalar() or 0
+                return ServiceStatus(status="healthy", details=f"{count} unpublished events")
+    except Exception as e:
+        logger.warning(f"Outbox table check failed: {e}")
+        return ServiceStatus(status="unhealthy", details=str(e))
+    return None
+
+
 @router.get("", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 async def health_check() -> Any:
-    """Detailed health check validating PostgreSQL and Redis connectivity."""
+    """Detailed health check validating PostgreSQL, Redis, Kafka, and Outbox."""
     services: dict[str, ServiceStatus] = {}
     all_healthy = True
 
-    # Check PostgreSQL
+    # 1. Check PostgreSQL
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -44,7 +83,7 @@ async def health_check() -> Any:
         services["database"] = ServiceStatus(status="unhealthy", details=str(e))
         all_healthy = False
 
-    # Check Redis
+    # 2. Check Redis
     try:
         redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
         await redis_client.ping()
@@ -54,6 +93,22 @@ async def health_check() -> Any:
         logger.warning(f"Redis health check failed: {e}")
         services["redis"] = ServiceStatus(status="unhealthy", details=str(e))
         all_healthy = False
+
+    # 3. Check Kafka
+    kafka_ok, kafka_details = await check_kafka()
+    if kafka_ok:
+        services["kafka"] = ServiceStatus(status="healthy", details=kafka_details)
+    else:
+        logger.warning(f"Kafka health check failed: {kafka_details}")
+        services["kafka"] = ServiceStatus(status="unhealthy", details=kafka_details)
+        all_healthy = False
+
+    # 4. Check Outbox (when table exists)
+    outbox_status = await check_outbox()
+    if outbox_status:
+        services["outbox"] = outbox_status
+        if outbox_status.status != "healthy":
+            all_healthy = False
 
     overall_status = "healthy" if all_healthy else "degraded"
 

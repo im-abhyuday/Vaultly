@@ -1,4 +1,4 @@
-"""TenantRAG FastAPI application entrypoint.
+"""Vaultly FastAPI application entrypoint.
 
 Initializes middleware, lifespan lifecycle, structured logging, and routers.
 """
@@ -22,7 +22,7 @@ from app.db.session import engine
 
 settings = get_settings()
 setup_logging(log_level=settings.LOG_LEVEL)
-logger = logging.getLogger("tenantrag.api")
+logger = logging.getLogger("vaultly.api")
 
 
 @asynccontextmanager
@@ -132,17 +132,31 @@ async def liveness_probe() -> dict[str, str]:
 
 @app.get("/readyz", tags=["Health"])
 async def readiness_probe() -> JSONResponse:
-    """Readiness probe checking database connectivity before traffic routing."""
+    """Readiness probe checking database and Kafka connectivity before traffic routing."""
+    errors: list[str] = []
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
     except Exception as e:
-        logger.warning(f"Readiness check failed: {e}")
+        logger.warning(f"Readiness check failed on database: {e}")
+        errors.append(f"database: {e}")
+
+    try:
+        from app.api.v1.endpoints.health import check_kafka
+
+        kafka_ok, kafka_details = await check_kafka()
+        if not kafka_ok:
+            logger.warning(f"Readiness check failed on kafka: {kafka_details}")
+            errors.append(f"kafka: {kafka_details}")
+    except Exception as e:
+        errors.append(f"kafka: {e}")
+
+    if errors:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"status": "not_ready", "error": str(e)},
+            content={"status": "not_ready", "errors": errors},
         )
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
 
 
 # Mount versioned API router

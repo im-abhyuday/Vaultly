@@ -12,7 +12,7 @@ def test_default_settings_instantiation() -> None:
         JWT_SECRET_KEY="a" * 32,
         ENVIRONMENT="development",
     )
-    assert settings.PROJECT_NAME == "TenantRAG"
+    assert settings.PROJECT_NAME == "Vaultly"
     assert settings.API_V1_STR == "/api/v1"
     assert settings.EMBEDDING_DIMENSION == 384
     assert settings.REDIS_SIMILARITY_THRESHOLD == 0.95

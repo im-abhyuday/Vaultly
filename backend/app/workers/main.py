@@ -10,7 +10,7 @@ from app.core.logging import setup_logging
 
 settings = get_settings()
 setup_logging(log_level=settings.LOG_LEVEL)
-logger = logging.getLogger("tenantrag.worker")
+logger = logging.getLogger("vaultly.worker")
 
 
 class WorkerManager:
@@ -25,7 +25,7 @@ class WorkerManager:
 
     async def run(self) -> None:
         logger.info(
-            "TenantRAG Worker starting up",
+            "Vaultly Worker starting up",
             extra={
                 "kafka_servers": settings.KAFKA_BOOTSTRAP_SERVERS,
                 "environment": settings.ENVIRONMENT,

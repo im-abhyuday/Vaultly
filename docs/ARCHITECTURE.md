@@ -1,7 +1,7 @@
-# TenantRAG Architecture
+# Vaultly Architecture
 
 ## Overview
-TenantRAG is a production-style, multi-tenant Retrieval-Augmented Generation (RAG) platform featuring:
+Vaultly is a production-style, multi-tenant Retrieval-Augmented Generation (RAG) platform featuring:
 - Strict multi-tenant isolation via PostgreSQL Row-Level Security (RLS) and pre-ranking ACL SQL filters.
 - Asynchronous event-driven document ingestion pipeline powered by Kafka / Redpanda.
 - Hybrid search (pgvector cosine similarity + PostgreSQL full-text search) merged with Reciprocal Rank Fusion (RRF), followed by local cross-encoder reranking.
