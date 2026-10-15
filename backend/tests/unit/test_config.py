@@ -45,17 +45,25 @@ def test_jwt_secret_key_minimum_length() -> None:
 
 
 def test_database_url_assembly() -> None:
-    """Ensure database URL is auto-assembled when not explicitly specified."""
+    """Ensure database URLs are auto-assembled when not explicitly specified."""
     settings = Settings(
         JWT_SECRET_KEY="a" * 32,
-        POSTGRES_USER="custom_user",
-        POSTGRES_PASSWORD="custom_password",
+        POSTGRES_USER="custom_owner",
+        POSTGRES_PASSWORD="custom_owner_password",
+        APP_DB_USER="custom_app",
+        APP_DB_PASSWORD="custom_app_password",
         POSTGRES_SERVER="db.example.com",
         POSTGRES_PORT=5433,
         POSTGRES_DB="custom_db",
+        MIGRATION_DATABASE_URL=None,
         DATABASE_URL=None,
     )
     assert (
-        settings.DATABASE_URL
-        == "postgresql+asyncpg://custom_user:custom_password@db.example.com:5433/custom_db"
+        settings.MIGRATION_DATABASE_URL
+        == "postgresql+asyncpg://custom_owner:custom_owner_password@db.example.com:5433/custom_db"
     )
+    assert (
+        settings.DATABASE_URL
+        == "postgresql+asyncpg://custom_app:custom_app_password@db.example.com:5433/custom_db"
+    )
+

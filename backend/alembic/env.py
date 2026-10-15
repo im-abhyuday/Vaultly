@@ -6,6 +6,7 @@ from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.models  # noqa: F401
 from app.core.config import get_settings
 from app.db.base import Base
 
@@ -17,8 +18,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 settings = get_settings()
 
-# Override sqlalchemy.url with dynamic application settings
-config.set_main_option("sqlalchemy.url", str(settings.DATABASE_URL))
+# Override sqlalchemy.url with dynamic application settings (migration role)
+migration_url = settings.MIGRATION_DATABASE_URL or str(settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", str(migration_url))
 
 
 def do_run_migrations(connection: Connection) -> None:
@@ -39,7 +41,9 @@ def do_run_migrations(connection: Connection) -> None:
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = str(settings.DATABASE_URL)
+    configuration["sqlalchemy.url"] = str(
+        settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
+    )
 
     connectable = async_engine_from_config(
         configuration,

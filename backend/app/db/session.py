@@ -1,7 +1,8 @@
-"""Database session management with SQLAlchemy 2.0 async engine."""
-
+import uuid
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -13,7 +14,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-# Asynchronous database engine
+# Asynchronous database engine (connects as runtime role tenantrag_app)
 engine: AsyncEngine = create_async_engine(
     str(settings.DATABASE_URL),
     echo=settings.DEBUG and not settings.is_production,
@@ -33,8 +34,34 @@ async_session_maker: async_sessionmaker[AsyncSession] = async_sessionmaker(
 )
 
 
+async def set_tenant_context(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Set transaction-local tenant context using set_config.
+
+    Using SELECT set_config('app.tenant_id', :tid, true) sets the setting
+    strictly for the current transaction (is_local=true), ensuring it never leaks
+    across pooled connections once the transaction completes.
+    """
+    await session.execute(
+        text("SELECT set_config('app.tenant_id', :tid, true)"),
+        {"tid": str(tenant_id)},
+    )
+
+
+@asynccontextmanager
+async def tenant_transaction(
+    tenant_id: uuid.UUID,
+    session_maker: async_sessionmaker[AsyncSession] | None = None,
+) -> AsyncGenerator[AsyncSession, None]:
+    """Context manager opening a transaction, setting the tenant context, and committing."""
+    maker = session_maker or async_session_maker
+    async with maker() as session:
+        async with session.begin():
+            await set_tenant_context(session, tenant_id)
+            yield session
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency yielding an async database session."""
+    """FastAPI dependency yielding a generic async database session."""
     async with async_session_maker() as session:
         try:
             yield session
@@ -44,3 +71,4 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+

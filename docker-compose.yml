@@ -78,7 +78,8 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - MIGRATION_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - DATABASE_URL=postgresql+asyncpg://${APP_DB_USER:-tenantrag_app}:${APP_DB_PASSWORD:-tenantrag_app_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
       - REDIS_URL=redis://redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     ports:
@@ -105,7 +106,8 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - MIGRATION_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-tenantrag}:${POSTGRES_PASSWORD:-tenantrag_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
+      - DATABASE_URL=postgresql+asyncpg://${APP_DB_USER:-tenantrag_app}:${APP_DB_PASSWORD:-tenantrag_app_secret}@postgres:5432/${POSTGRES_DB:-tenantrag}
       - REDIS_URL=redis://redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:

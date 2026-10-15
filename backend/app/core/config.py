@@ -41,17 +41,34 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "tenantrag"
     POSTGRES_PASSWORD: str = "tenantrag_secret"
     POSTGRES_DB: str = "tenantrag"
+    APP_DB_USER: str = "tenantrag_app"
+    APP_DB_PASSWORD: str = "tenantrag_app_secret"
+    MIGRATION_DATABASE_URL: str | None = None
     DATABASE_URL: str | None = None
 
-    @field_validator("DATABASE_URL", mode="before")
+    @field_validator("MIGRATION_DATABASE_URL", mode="before")
     @classmethod
-    def assemble_db_connection(cls, v: str | None, info: Any) -> str:
-        """Construct database URL if not explicitly provided."""
+    def assemble_migration_db_connection(cls, v: str | None, info: Any) -> str:
+        """Construct migration owner database URL if not explicitly provided."""
         if isinstance(v, str) and v.strip():
             return v
         data = info.data
         user = data.get("POSTGRES_USER", "tenantrag")
         password = data.get("POSTGRES_PASSWORD", "tenantrag_secret")
+        server = data.get("POSTGRES_SERVER", "localhost")
+        port = data.get("POSTGRES_PORT", 5432)
+        db = data.get("POSTGRES_DB", "tenantrag")
+        return f"postgresql+asyncpg://{user}:{password}@{server}:{port}/{db}"
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: str | None, info: Any) -> str:
+        """Construct runtime database URL if not explicitly provided."""
+        if isinstance(v, str) and v.strip():
+            return v
+        data = info.data
+        user = data.get("APP_DB_USER", "tenantrag_app")
+        password = data.get("APP_DB_PASSWORD", "tenantrag_app_secret")
         server = data.get("POSTGRES_SERVER", "localhost")
         port = data.get("POSTGRES_PORT", 5432)
         db = data.get("POSTGRES_DB", "tenantrag")

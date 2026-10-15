@@ -29,11 +29,29 @@ logger = logging.getLogger("tenantrag.api")
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager handling application startup and shutdown."""
     logger.info(
-        "Starting TenantRAG API",
+        "Starting Vaultly API",
         extra={"environment": settings.ENVIRONMENT, "debug": settings.DEBUG},
     )
+    # Security assertion: ensure runtime role has neither superuser nor bypassrls
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+            )
+        )
+        role_row = result.mappings().first()
+        if role_row:
+            rolname = role_row["rolname"]
+            rolsuper = role_row["rolsuper"]
+            rolbypassrls = role_row["rolbypassrls"]
+            if rolsuper or rolbypassrls:
+                raise RuntimeError(
+                    f"Security violation: Database runtime role '{rolname}' must NOT be "
+                    f"superuser or have bypassrls (rolsuper={rolsuper}, rolbypassrls={rolbypassrls}). "
+                    "Refusing to start."
+                )
     yield
-    logger.info("Shutting down TenantRAG API")
+    logger.info("Shutting down Vaultly API")
     await engine.dispose()
 
 
