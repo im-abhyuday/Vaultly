@@ -181,11 +181,9 @@ stateDiagram-v2
     PARSING --> FAILED: Parse error (corrupt, empty, unsupported, retries exhausted)
     PARSED --> INDEXING: IndexConsumer claims row
     INDEXING --> READY: Chunks embedded & committed to pgvector
-    INDEXING --> FAILED: Chunk/embed error or retries exhausted
-    READY --> PARSING: POST /documents/{id}/reprocess
-    FAILED --> PARSING: POST /documents/{id}/reprocess
-    FAILED --> [*]: Dead-Letter Queue (DLQ) emitted
     READY --> [*]: DELETE /documents/{id} (cascaded)
+    FAILED --> UPLOADED: POST /documents/{id}/reprocess
+    FAILED --> [*]: Dead-Letter Queue (DLQ) emitted
 ```
 
 ### 3. Error Handling, Retries & Dead Letter Queue (DLQ)
