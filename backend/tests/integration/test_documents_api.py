@@ -29,19 +29,13 @@ settings = get_settings()
 
 
 def create_test_docx(text: str = "Hello Vaultly docx text") -> bytes:
-    """Create a minimal valid docx in memory."""
+    """Create a minimal valid docx in memory with python-docx."""
+    import docx
+
+    doc = docx.Document()
+    doc.add_paragraph(text)
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(
-            "[Content_Types].xml",
-            '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>',
-        )
-        doc_xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
-        )
-        zf.writestr("word/document.xml", doc_xml)
+    doc.save(buf)
     return buf.getvalue()
 
 
@@ -167,10 +161,10 @@ async def test_document_upload_success_and_deduplication(
         # Check DB: only 1 document row and 1 outbox event exists for doc1_id
         async with app_session_maker() as session:
             outbox_events = (
-                await session.execute(
-                    select(OutboxEvent).where(OutboxEvent.key == str(doc1_id))
-                )
-            ).scalars().all()
+                (await session.execute(select(OutboxEvent).where(OutboxEvent.key == str(doc1_id))))
+                .scalars()
+                .all()
+            )
             assert len(outbox_events) == 1
             assert outbox_events[0].topic.endswith("document.uploaded")
 
@@ -186,7 +180,9 @@ async def test_document_upload_success_and_deduplication(
 
 
 @pytest.mark.asyncio
-async def test_document_upload_validation_errors() -> None:
+async def test_document_upload_validation_errors(
+    app_session_maker: async_sessionmaker[AsyncSession],
+) -> None:
     """Verify validation: empty file, bad extension, fake pdf, zip-bomb docx, NUL bytes, filename sanitization."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -232,7 +228,9 @@ async def test_document_upload_validation_errors() -> None:
         # 5. Invalid DOCX (not a zip file) -> 400
         res = await client.post(
             "/api/v1/documents",
-            files={"file": ("corrupt.docx", b"not-a-zip-content", "application/vnd.openxmlformats")},
+            files={
+                "file": ("corrupt.docx", b"not-a-zip-content", "application/vnd.openxmlformats")
+            },
             headers=headers,
         )
         assert res.status_code == 400
@@ -241,6 +239,7 @@ async def test_document_upload_validation_errors() -> None:
         bomb_buf = io.BytesIO()
         with zipfile.ZipFile(bomb_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr("_rels/.rels", "<Relationships/>")
             zf.writestr("word/document.xml", "A" * 50000)
         res = await client.post(
             "/api/v1/documents",
@@ -249,6 +248,35 @@ async def test_document_upload_validation_errors() -> None:
         )
         assert res.status_code == 400
         assert "ratio" in res.json()["detail"].lower() or "bomb" in res.json()["detail"].lower()
+
+        # 6b. Invalid DOCX containing only word/document.xml -> 400, no row, no file, no outbox
+        only_doc_xml_buf = io.BytesIO()
+        with zipfile.ZipFile(only_doc_xml_buf, "w") as zf:
+            zf.writestr("word/document.xml", "<w:document><w:body><w:p/></w:body></w:document>")
+        res = await client.post(
+            "/api/v1/documents",
+            files={
+                "file": (
+                    "only_doc.docx",
+                    only_doc_xml_buf.getvalue(),
+                    "application/vnd.openxmlformats",
+                )
+            },
+            headers=headers,
+        )
+        assert res.status_code == 400
+
+        # Assert no document row, no outbox event
+        async with app_session_maker() as sess:
+            doc_rows = (
+                (await sess.execute(select(Document).where(Document.filename == "only_doc.docx")))
+                .scalars()
+                .all()
+            )
+            assert len(doc_rows) == 0
+            outbox_rows = (await sess.execute(select(OutboxEvent))).scalars().all()
+            # Outbox should have 0 events for this failed upload
+            assert all("only_doc.docx" not in str(o.payload) for o in outbox_rows)
 
         # 7. Filename sanitization (path traversal stripped) -> 202, filename is "passwd.txt"
         res = await client.post(
@@ -270,7 +298,9 @@ async def test_document_upload_validation_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_document_upload_oversize_rejected_and_cleaned(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_document_upload_oversize_rejected_and_cleaned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify upload exceeding MAX_UPLOAD_MB aborts mid-stream with 413 and leaves no temp file."""
     # Temporarily cap MAX_UPLOAD_MB to 1 MB for testing
     monkeypatch.setattr(settings, "MAX_UPLOAD_MB", 1)
@@ -394,9 +424,7 @@ async def test_document_permissions_matrix(
             ]:
                 # Fetch chunking_config_id and tenant_id from document
                 doc_obj = (
-                    await session.execute(
-                        select(Document).where(Document.id == uuid.UUID(d_id))
-                    )
+                    await session.execute(select(Document).where(Document.id == uuid.UUID(d_id)))
                 ).scalar_one()
                 chunk_obj = Chunk(
                     id=uuid.uuid4(),
@@ -413,32 +441,60 @@ async def test_document_permissions_matrix(
 
         # 6. METADATA VISIBILITY TESTS (GET /documents/{id})
         # Admin can view metadata of all 3
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}", headers=admin_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_grp_id}", headers=admin_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_ten_id}", headers=admin_h)).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}", headers=admin_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_grp_id}", headers=admin_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_ten_id}", headers=admin_h)
+        ).status_code == 200
 
         # Auditor can view metadata of all 3
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}", headers=aud_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_grp_id}", headers=aud_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_ten_id}", headers=aud_h)).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}", headers=aud_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_grp_id}", headers=aud_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_ten_id}", headers=aud_h)
+        ).status_code == 200
 
         # Member 1 (owner) can view metadata of all 3
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}", headers=m1_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_grp_id}", headers=m1_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_ten_id}", headers=m1_h)).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}", headers=m1_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_grp_id}", headers=m1_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_ten_id}", headers=m1_h)
+        ).status_code == 200
 
         # Member 2 (in group) can view metadata of doc_grp and doc_ten; gets 404 for doc_priv
-        assert (await client.get(f"/api/v1/documents/{doc_grp_id}", headers=m2_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_ten_id}", headers=m2_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}", headers=m2_h)).status_code == 404
+        assert (
+            await client.get(f"/api/v1/documents/{doc_grp_id}", headers=m2_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_ten_id}", headers=m2_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}", headers=m2_h)
+        ).status_code == 404
 
         # 7. CONTENT ACCESSIBILITY TESTS (GET /documents/{id}/chunks)
         # CRITICAL TEST: Admin CANNOT view chunks of private document (NO content bypass!)
-        admin_priv_chunks = await client.get(f"/api/v1/documents/{doc_priv_id}/chunks", headers=admin_h)
+        admin_priv_chunks = await client.get(
+            f"/api/v1/documents/{doc_priv_id}/chunks", headers=admin_h
+        )
         assert admin_priv_chunks.status_code == 404
 
         # Admin CAN view chunks of TENANT document
-        admin_ten_chunks = await client.get(f"/api/v1/documents/{doc_ten_id}/chunks", headers=admin_h)
+        admin_ten_chunks = await client.get(
+            f"/api/v1/documents/{doc_ten_id}/chunks", headers=admin_h
+        )
         assert admin_ten_chunks.status_code == 200
         assert len(admin_ten_chunks.json()) == 1
 
@@ -457,9 +513,15 @@ async def test_document_permissions_matrix(
         assert "embedding" not in chunks_data[0]
 
         # Member 2 (in group) can view chunks of doc_grp and doc_ten, but gets 404 on doc_priv
-        assert (await client.get(f"/api/v1/documents/{doc_grp_id}/chunks", headers=m2_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_ten_id}/chunks", headers=m2_h)).status_code == 200
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}/chunks", headers=m2_h)).status_code == 404
+        assert (
+            await client.get(f"/api/v1/documents/{doc_grp_id}/chunks", headers=m2_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_ten_id}/chunks", headers=m2_h)
+        ).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}/chunks", headers=m2_h)
+        ).status_code == 404
 
         # 8. MANAGEMENT PERMISSIONS (PATCH /access, DELETE)
         # Member 2 (non-owner) cannot PATCH access on Member 1's doc -> 404
@@ -480,7 +542,9 @@ async def test_document_permissions_matrix(
         assert good_patch.json()["visibility"] == "TENANT"
 
         # Now Member 2 can see chunks of formerly private doc because visibility is TENANT
-        assert (await client.get(f"/api/v1/documents/{doc_priv_id}/chunks", headers=m2_h)).status_code == 200
+        assert (
+            await client.get(f"/api/v1/documents/{doc_priv_id}/chunks", headers=m2_h)
+        ).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -512,9 +576,7 @@ async def test_document_delete_cascades_and_removes_file(
         # 2. Insert mock chunk directly
         async with tenant_transaction(uuid.UUID(tenant_id), app_session_maker) as session:
             doc_obj = (
-                await session.execute(
-                    select(Document).where(Document.id == uuid.UUID(doc_id))
-                )
+                await session.execute(select(Document).where(Document.id == uuid.UUID(doc_id)))
             ).scalar_one()
             chunk_obj = Chunk(
                 id=uuid.uuid4(),
@@ -536,17 +598,15 @@ async def test_document_delete_cascades_and_removes_file(
         # 4. Verify DB records are gone
         async with tenant_transaction(uuid.UUID(tenant_id), app_session_maker) as session:
             d_check = (
-                await session.execute(
-                    select(Document).where(Document.id == uuid.UUID(doc_id))
-                )
+                await session.execute(select(Document).where(Document.id == uuid.UUID(doc_id)))
             ).scalar_one_or_none()
             assert d_check is None
 
             c_check = (
-                await session.execute(
-                    select(Chunk).where(Chunk.document_id == uuid.UUID(doc_id))
-                )
-            ).scalars().all()
+                (await session.execute(select(Chunk).where(Chunk.document_id == uuid.UUID(doc_id))))
+                .scalars()
+                .all()
+            )
             assert len(c_check) == 0
 
         # 5. Verify file is removed from storage
@@ -604,9 +664,9 @@ async def test_document_reprocess_status_flow(
         # 5. Verify a new OutboxEvent was inserted
         async with app_session_maker() as session:
             events = (
-                await session.execute(
-                    select(OutboxEvent).where(OutboxEvent.key == str(doc_id))
-                )
-            ).scalars().all()
+                (await session.execute(select(OutboxEvent).where(OutboxEvent.key == str(doc_id))))
+                .scalars()
+                .all()
+            )
             # 1 from initial upload, 1 from reprocess = 2 events
             assert len(events) == 2

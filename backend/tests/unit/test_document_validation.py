@@ -86,17 +86,32 @@ def test_validation_docx_structure(tmp_path: Path) -> None:
     assert exc.value.status_code == 400
     assert "word/document.xml" in exc.value.detail
 
-    # 3. Valid DOCX
-    valid_docx = tmp_path / "valid.docx"
-    with zipfile.ZipFile(valid_docx, "w") as zf:
+    # 3. Zip containing only word/document.xml (missing [Content_Types].xml and _rels/.rels) -> 400
+    only_doc_xml = tmp_path / "only_doc_xml.docx"
+    with zipfile.ZipFile(only_doc_xml, "w") as zf:
         zf.writestr("word/document.xml", "<w:document><w:body><w:p/></w:body></w:document>")
-    assert detect_and_validate_file(valid_docx, "valid.docx") == "docx"
+
+    with pytest.raises(HTTPException) as exc:
+        detect_and_validate_file(only_doc_xml, "only_doc_xml.docx")
+    assert exc.value.status_code == 400
+    assert "[Content_Types].xml" in exc.value.detail or "_rels/.rels" in exc.value.detail
+
+    # 4. Real valid DOCX generated with python-docx
+    import docx
+
+    real_doc = docx.Document()
+    real_doc.add_paragraph("Valid python-docx test content.")
+    real_docx_path = tmp_path / "real.docx"
+    real_doc.save(str(real_docx_path))
+    assert detect_and_validate_file(real_docx_path, "real.docx") == "docx"
 
 
 def test_validation_docx_zip_bomb(tmp_path: Path) -> None:
     """Verify zip bomb defense triggers on excessive uncompressed size or ratio."""
     bomb_file = tmp_path / "bomb.docx"
     with zipfile.ZipFile(bomb_file, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("_rels/.rels", "<Relationships/>")
         zf.writestr("word/document.xml", "A" * (1024 * 1024 * 5))  # Highly compressible 5MB string
 
     with pytest.raises(HTTPException) as exc:

@@ -73,11 +73,13 @@ def detect_and_validate_file(file_path: Path, filename: str) -> str:
 
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
-                namelist = zf.namelist()
-                if "word/document.xml" not in namelist:
+                namelist = {name.replace("\\", "/") for name in zf.namelist()}
+                required_entries = ["[Content_Types].xml", "_rels/.rels", "word/document.xml"]
+                missing_entries = [req for req in required_entries if req not in namelist]
+                if missing_entries:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid DOCX file: Missing 'word/document.xml'.",
+                        detail=f"Invalid DOCX file: Missing required OOXML components ({', '.join(missing_entries)}).",
                     )
 
                 # Zip bomb checks: total uncompressed size and compression ratio
