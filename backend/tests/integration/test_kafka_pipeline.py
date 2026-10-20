@@ -24,6 +24,7 @@ from typing import Any, BinaryIO
 import docx
 import pypdf
 import pytest
+from aiokafka import TopicPartition
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -74,8 +75,9 @@ class MockKafkaConsumer:
 class MockKafkaProducer:
     """Mock Kafka Producer capturing published messages and headers."""
 
-    def __init__(self) -> None:
+    def __init__(self, fail_on_topic_substr: str | None = None) -> None:
         self.published_messages: list[dict[str, Any]] = []
+        self.fail_on_topic_substr = fail_on_topic_substr
 
     async def send_and_wait(
         self,
@@ -84,12 +86,16 @@ class MockKafkaProducer:
         key: bytes | None = None,
         headers: list[tuple[str, bytes]] | None = None,
     ) -> Any:
-        self.published_messages.append({
-            "topic": topic,
-            "value": value,
-            "key": key,
-            "headers": headers or [],
-        })
+        if self.fail_on_topic_substr and self.fail_on_topic_substr in topic:
+            raise RuntimeError(f"Simulated Kafka publish failure for topic '{topic}'")
+        self.published_messages.append(
+            {
+                "topic": topic,
+                "value": value,
+                "key": key,
+                "headers": headers or [],
+            }
+        )
         return None
 
 
@@ -127,7 +133,9 @@ def create_scanned_pdf() -> bytes:
     return stream.getvalue()
 
 
-async def register_tenant_and_get_token(client: AsyncClient, name_prefix: str = "tenant") -> tuple[uuid.UUID, str]:
+async def register_tenant_and_get_token(
+    client: AsyncClient, name_prefix: str = "tenant"
+) -> tuple[uuid.UUID, str]:
     """Helper to register a tenant and return (tenant_id, access_token)."""
     slug = f"{name_prefix}-{uuid.uuid4().hex[:8]}"
     reg = {
@@ -143,8 +151,6 @@ async def register_tenant_and_get_token(client: AsyncClient, name_prefix: str = 
     token = data["access_token"]
     payload = decode_access_token(token)
     return uuid.UUID(payload["tid"]), token
-
-
 
 
 # --- Integration Test Cases ---
@@ -177,7 +183,13 @@ async def test_pipeline_e2e_full_lifecycle(
     docx_bytes = create_test_docx("Enterprise security architecture paragraph.")
     res_docx = await async_client.post(
         "/api/v1/documents",
-        files={"file": ("sample.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        files={
+            "file": (
+                "sample.docx",
+                docx_bytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
         headers=headers,
     )
     assert res_docx.status_code == 202
@@ -192,7 +204,6 @@ async def test_pipeline_e2e_full_lifecycle(
     )
     assert res_pdf.status_code == 202
     pdf_doc_id = uuid.UUID(res_pdf.json()["id"])
-
 
     doc_ids = [txt_doc_id, docx_doc_id, pdf_doc_id]
 
@@ -262,7 +273,9 @@ async def test_pipeline_e2e_full_lifecycle(
             assert doc.status == DocumentStatus.READY.value
 
             # Check chunks in pgvector
-            chunks_stmt = select(Chunk).where(Chunk.document_id == did).order_by(Chunk.ordinal.asc())
+            chunks_stmt = (
+                select(Chunk).where(Chunk.document_id == did).order_by(Chunk.ordinal.asc())
+            )
             chunks = (await session.execute(chunks_stmt)).scalars().all()
             assert len(chunks) > 0
 
@@ -296,7 +309,13 @@ async def test_pipeline_idempotency_duplicate_events(
 
     res = await async_client.post(
         "/api/v1/documents",
-        files={"file": ("test.txt", b"Idempotent processing test content.\n\nSecond block.", "text/plain")},
+        files={
+            "file": (
+                "test.txt",
+                b"Idempotent processing test content.\n\nSecond block.",
+                "text/plain",
+            )
+        },
         headers=headers,
     )
     doc_id = uuid.UUID(res.json()["id"])
@@ -345,8 +364,10 @@ async def test_pipeline_idempotency_duplicate_events(
 
     async with tenant_transaction(tenant_id, app_session_maker) as session:
         initial_chunks = (
-            await session.execute(select(Chunk).where(Chunk.document_id == doc_id))
-        ).scalars().all()
+            (await session.execute(select(Chunk).where(Chunk.document_id == doc_id)))
+            .scalars()
+            .all()
+        )
         assert len(initial_chunks) > 0
         initial_chunk_count = len(initial_chunks)
 
@@ -362,8 +383,10 @@ async def test_pipeline_idempotency_duplicate_events(
         assert doc.status == DocumentStatus.READY.value
 
         current_chunks = (
-            await session.execute(select(Chunk).where(Chunk.document_id == doc_id))
-        ).scalars().all()
+            (await session.execute(select(Chunk).where(Chunk.document_id == doc_id)))
+            .scalars()
+            .all()
+        )
         assert len(current_chunks) == initial_chunk_count
 
 
@@ -384,7 +407,6 @@ async def test_pipeline_corrupt_file_and_dlq(
     )
     assert res.status_code == 202
     doc_id = uuid.UUID(res.json()["id"])
-
 
     producer = MockKafkaProducer()
     relay = OutboxRelay(session_maker=app_session_maker)
@@ -419,7 +441,9 @@ async def test_pipeline_corrupt_file_and_dlq(
     dlq_headers = dict(dlq_messages[0]["headers"])
     err_val = dlq_headers.get("error_code") or dlq_headers.get(b"error_code")
     assert err_val is not None
-    assert (err_val.decode() if isinstance(err_val, bytes) else err_val) == DocumentErrorCode.CORRUPT_FILE.value
+    assert (
+        err_val.decode() if isinstance(err_val, bytes) else err_val
+    ) == DocumentErrorCode.CORRUPT_FILE.value
     stage_val = dlq_headers.get("stage") or dlq_headers.get(b"stage")
     assert stage_val is not None
     assert (stage_val.decode() if isinstance(stage_val, bytes) else stage_val) == "parsing"
@@ -442,7 +466,6 @@ async def test_pipeline_scanned_image_only_pdf(
     )
     assert res.status_code == 202
     doc_id = uuid.UUID(res.json()["id"])
-
 
     producer = MockKafkaProducer()
     relay = OutboxRelay(session_maker=app_session_maker)
@@ -534,7 +557,9 @@ async def test_pipeline_transient_retry_and_exhaustion(
     await consumer_a.process_message(msg_a)
 
     async with tenant_transaction(tenant_id, app_session_maker) as session:
-        doc_a = (await session.execute(select(Document).where(Document.id == doc_a_id))).scalar_one()
+        doc_a = (
+            await session.execute(select(Document).where(Document.id == doc_a_id))
+        ).scalar_one()
         assert doc_a.status == DocumentStatus.PARSED.value
 
     # Case B: Always fails (exceeds max_attempts=2) -> marks FAILED with RETRIES_EXHAUSTED
@@ -569,9 +594,10 @@ async def test_pipeline_transient_retry_and_exhaustion(
     )
     await consumer_b.process_message(msg_b)
 
-
     async with tenant_transaction(tenant_id, app_session_maker) as session:
-        doc_b = (await session.execute(select(Document).where(Document.id == doc_b_id))).scalar_one()
+        doc_b = (
+            await session.execute(select(Document).where(Document.id == doc_b_id))
+        ).scalar_one()
         assert doc_b.status == DocumentStatus.FAILED.value
         assert doc_b.error_code == DocumentErrorCode.RETRIES_EXHAUSTED.value
 
@@ -580,7 +606,9 @@ async def test_pipeline_transient_retry_and_exhaustion(
     dlq_headers_b = dict(dlq_messages[0]["headers"])
     err_b = dlq_headers_b.get("error_code") or dlq_headers_b.get(b"error_code")
     assert err_b is not None
-    assert (err_b.decode() if isinstance(err_b, bytes) else err_b) == DocumentErrorCode.RETRIES_EXHAUSTED.value
+    assert (
+        err_b.decode() if isinstance(err_b, bytes) else err_b
+    ) == DocumentErrorCode.RETRIES_EXHAUSTED.value
 
 
 async def test_pipeline_poison_pill_handling(
@@ -653,7 +681,6 @@ async def test_pipeline_delete_during_ingestion(
     # Delete the document before consumer processes it
     del_res = await async_client.delete(f"/api/v1/documents/{doc_id}", headers=headers)
     assert del_res.status_code == 200
-
 
     consumer = MockKafkaConsumer()
     parse_consumer = ParseConsumer(
@@ -753,6 +780,92 @@ async def test_outbox_relay_concurrency_no_duplicates(
         stmt = select(OutboxEvent).where(OutboxEvent.published_at.is_not(None))
         published_events = (await session.execute(stmt)).scalars().all()
         assert len(published_events) == 10
+
+
+async def test_pipeline_commit_ordering_dlq_failure_prevents_offset_commit(
+    async_client: AsyncClient,
+    app_session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ensure offsets are committed ONLY after successful DLQ publish; failure leaves offset uncommitted."""
+    tenant_id, token = await register_tenant_and_get_token(async_client, "commit-order")
+    headers = {"Authorization": f"Bearer {token}"}
+    storage = get_storage()
+
+    corrupt_pdf = b"%PDF-1.4 corrupt content that fails parsing immediately"
+    res = await async_client.post(
+        "/api/v1/documents",
+        files={"file": ("corrupt_ordering.pdf", corrupt_pdf, "application/pdf")},
+        headers=headers,
+    )
+    assert res.status_code == 202
+
+    # 1. Drain outbox into mock producer
+    relay_producer = MockKafkaProducer()
+    relay = OutboxRelay(session_maker=app_session_maker)
+    await relay.publish_batch(relay_producer)
+
+    msg = FakeKafkaMessage(
+        topic="vaultly.document.uploaded",
+        partition=0,
+        offset=42,
+        key=relay_producer.published_messages[0]["key"],
+        value=relay_producer.published_messages[0]["value"],
+    )
+
+    # 2. When DLQ publish fails, consumer must NOT commit offset
+    failing_dlq_producer = MockKafkaProducer(fail_on_topic_substr="dlq")
+    consumer_fail = MockKafkaConsumer()
+    parse_consumer_fail = ParseConsumer(
+        consumer=consumer_fail,
+        producer=failing_dlq_producer,
+        session_maker=app_session_maker,
+        storage=storage,
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated Kafka publish failure"):
+        await parse_consumer_fail.process_message(msg)
+
+    # CRITICAL ASSERTION: consumer offset was NOT committed
+    assert len(consumer_fail.committed) == 0
+
+    # 3. When DLQ publish succeeds, consumer commits offset
+    corrupt_pdf_2 = b"%PDF-1.4 second distinct corrupt content"
+    res_ok = await async_client.post(
+        "/api/v1/documents",
+        files={"file": ("corrupt_ordering_ok.pdf", corrupt_pdf_2, "application/pdf")},
+        headers=headers,
+    )
+    assert res_ok.status_code == 202
+
+    relay_producer_ok = MockKafkaProducer()
+    await relay.publish_batch(relay_producer_ok)
+
+    msg_ok = FakeKafkaMessage(
+        topic="vaultly.document.uploaded",
+        partition=0,
+        offset=100,
+        key=relay_producer_ok.published_messages[0]["key"],
+        value=relay_producer_ok.published_messages[0]["value"],
+    )
+
+    working_dlq_producer = MockKafkaProducer()
+    consumer_ok = MockKafkaConsumer()
+    parse_consumer_ok = ParseConsumer(
+        consumer=consumer_ok,
+        producer=working_dlq_producer,
+        session_maker=app_session_maker,
+        storage=storage,
+    )
+
+    await parse_consumer_ok.process_message(msg_ok)
+
+    # CRITICAL ASSERTION: DLQ message published and offset committed
+    dlq_msgs = [m for m in working_dlq_producer.published_messages if "dlq" in m["topic"]]
+    assert len(dlq_msgs) == 1
+    assert len(consumer_ok.committed) == 1
+    tp = TopicPartition("vaultly.document.uploaded", 0)
+    assert tp in consumer_ok.committed
+    assert consumer_ok.committed[tp].offset == 101
 
 
 @pytest.mark.slow
